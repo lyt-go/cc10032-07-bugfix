@@ -106,15 +106,30 @@ class BaseModuleService:
             upstream_data[mod] = list(store.rows(mod))
         return upstream_data
 
-    def produce_artifact(self, data: list[dict[str, Any]], batch_id: str) -> dict[str, Any]:
-        """产出数据制品，通过流水线写入并返回结果"""
+    def produce_artifact(
+        self,
+        data: list[dict[str, Any]],
+        batch_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        replace: bool = False,
+    ) -> dict[str, Any]:
+        """产出数据制品，通过流水线写入并返回真实写入结果。"""
         if not self.PIPELINE:
             return {"ok": False, "reason": "模块未绑定流水线"}
         pl = store.pipeline(self.PIPELINE)
         if pl is None:
             pl = store.create_pipeline(self.PIPELINE, self.UPSTREAM_MODULES, self.MODULE)
-        ingested, dirty = pl.ingest(data, batch_id)
-        return {"ok": True, "pipeline": self.PIPELINE, "ingested": ingested, "dirty_details": dirty}
+        ingested, dirty = pl.ingest(data, batch_id, metadata=metadata, replace=replace)
+        duplicate = any("重复批次" in str(item) for item in dirty)
+        return {
+            "ok": not duplicate,
+            "pipeline": self.PIPELINE,
+            "batch_id": batch_id,
+            "ingested": ingested,
+            "dirty_details": dirty,
+            "duplicate": duplicate,
+        }
 
     def pipeline_snapshot(self) -> dict[str, Any]:
         """获取当前流水线版本化快照"""

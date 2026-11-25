@@ -26,25 +26,78 @@ class DataPipeline:
         self._versions: list[str] = []  # 版本号列表
         self._dirty_log: list[dict[str, Any]] = []
         self._batch_registry: set[str] = set()  # 防重复批次
+        self._batch_records: dict[str, dict[str, Any]] = {}
         self._last_checkpoint: dict[str, Any] = {}  # 中断恢复点
         self._interrupted = False
 
-    def ingest(self, rows: list[dict[str, Any]], batch_id: str) -> tuple[int, list[str]]:
-        """摄入数据行，返回 (成功行数, 脏行详情列表)"""
-        if batch_id in self._batch_registry:
+    def ingest(
+        self,
+        rows: list[dict[str, Any]],
+        batch_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        replace: bool = False,
+    ) -> tuple[int, list[str]]:
+        """摄入数据行，返回 (成功行数, 脏行详情列表)。
+
+        同一 ``batch_id`` 默认仍按重复批次拒绝；恢复重写同一检查点时可显式
+        ``replace=True``，避免重试产生第二份制品。脏行使用输入行中的原始
+        ``row_index``（若提供）记录位置，保证过滤后不会重新编号。
+        """
+        if batch_id in self._batch_registry and not replace:
             return 0, [f"重复批次 {batch_id} 已存在，拒绝摄入"]
+
+        if batch_id in self._batch_registry and replace:
+            self._remove_batch(batch_id)
+
         self._batch_registry.add(batch_id)
+        record: dict[str, Any] = {
+            "batch_id": batch_id,
+            "metadata": dict(metadata or {}),
+            "rows": [],
+            "dirty_rows": [],
+            "ts": time.time(),
+        }
+        self._batch_records[batch_id] = record
+
         clean_rows = []
         dirty_details = []
         for i, row in enumerate(rows):
-            issues = self._validate_row(row, i)
+            original_index = i
+            if isinstance(row, dict) and row.get("row_index") is not None:
+                try:
+                    original_index = int(row.get("row_index"))
+                except (TypeError, ValueError):
+                    original_index = i
+            issues = self._validate_row(row, original_index)
             if issues:
-                dirty_details.append(f"行 {i}: {'; '.join(issues)}")
-                self._dirty_log.append({"batch": batch_id, "row_index": i, "issues": issues, "row": row, "ts": time.time()})
+                detail = f"行 {original_index}: {'; '.join(issues)}"
+                dirty_details.append(detail)
+                dirty_record = {
+                    "batch": batch_id,
+                    "row_index": original_index,
+                    "issues": issues,
+                    "row": row,
+                    "ts": time.time(),
+                }
+                self._dirty_log.append(dirty_record)
+                record["dirty_rows"].append(dirty_record)
             else:
-                clean_rows.append(row)
+                clean_row = dict(row) if isinstance(row, dict) else {"value": row}
+                clean_rows.append(clean_row)
+                record["rows"].append(clean_row)
         self._artifacts.extend(clean_rows)
         return len(clean_rows), dirty_details
+
+    def _remove_batch(self, batch_id: str) -> None:
+        """从当前制品和脏行日志中移除一个可替换的写入检查点。"""
+        old_record = self._batch_records.get(batch_id)
+        if old_record:
+            old_ids = {id(row) for row in old_record.get("rows", [])}
+            if old_ids:
+                self._artifacts = [row for row in self._artifacts if id(row) not in old_ids]
+        self._dirty_log = [item for item in self._dirty_log if item.get("batch") != batch_id]
+        self._batch_records.pop(batch_id, None)
 
     def transform(self, transform_fn, *args, **kwargs) -> list[dict[str, Any]]:
         """对当前产物执行转换函数"""
@@ -112,6 +165,23 @@ class DataPipeline:
             "last_checkpoint": self._last_checkpoint,
             "artifacts_before_interrupt": len(self._artifacts),
         }
+
+    def rows_for_batch(self, batch_no: str) -> list[dict[str, Any]]:
+        """按逻辑批次编号读取已进入流水线的干净行。"""
+        return [
+            row for row in self._artifacts
+            if isinstance(row, dict)
+            and (row.get("batch_no") == batch_no or row.get("batch_id") == batch_no)
+        ]
+
+    def dirty_rows_for_batch(self, batch_no: str) -> list[dict[str, Any]]:
+        """按逻辑批次编号读取保留原始位置的脏行记录。"""
+        return [
+            item for item in self._dirty_log
+            if item.get("row", {}).get("batch_no") == batch_no
+            or item.get("row", {}).get("batch_id") == batch_no
+            or str(item.get("batch", "")).startswith(f"{batch_no}#")
+        ]
 
 
 class Store:

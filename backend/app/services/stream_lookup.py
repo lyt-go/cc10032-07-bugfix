@@ -71,15 +71,33 @@ class StreamLookupService(BaseModuleService):
             key = event.get(join_key)
             right_row = right_map.get(key)
             if right_row:
-                matched.append({**event, "dim_value": right_row["dim_value"]})
+                matched.append({
+                    **event,
+                    "dim_value": right_row["dim_value"],
+                    "source_identifier": entry.get("左流来源"),
+                    "lookup_rule": entry.get("规则编号"),
+                })
             else:
                 if unmatched_policy == "drop":
                     unmatched.append({"event": event, "reason": "无匹配维度，已丢弃"})
                 elif unmatched_policy == "keep":
-                    matched.append({**event, "dim_value": None})
+                    matched.append({
+                        **event,
+                        "dim_value": None,
+                        "source_identifier": entry.get("左流来源"),
+                        "lookup_rule": entry.get("规则编号"),
+                    })
 
         batch_id = f"LOOKUP_{entry_id}_{int(time.time())}"
-        self.produce_artifact(matched, batch_id)
+        self.produce_artifact(
+            matched,
+            batch_id,
+            metadata={
+                "source_identifier": entry.get("左流来源"),
+                "lookup_rule": entry.get("规则编号"),
+                "join_key": join_key,
+            },
+        )
 
         return {
             "ok": True,

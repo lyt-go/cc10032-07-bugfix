@@ -5,7 +5,9 @@ export type EntryRow = {
   status: string
   pending: boolean
   abnormal: boolean
-  [field: string]: string | number | boolean
+  // 后端会附带 progress/completeness 等嵌套核对结果。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [field: string]: any
 }
 
 export type ModuleMeta = {
@@ -18,6 +20,7 @@ export type ModuleMeta = {
   actions: string[]
   actionTargets: Record<string, string>
   metrics: string[]
+  metricStatuses?: [string, string, string]
 }
 
 export type PageResult = {

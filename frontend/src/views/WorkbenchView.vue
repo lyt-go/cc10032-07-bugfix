@@ -48,7 +48,15 @@
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)" :data-testid="`row-${row.id}`" :data-status="String(row.status)">
           <td v-for="column in meta.fields" :key="column">{{ row[column] ?? '—' }}</td>
-          <td>{{ row.status }}</td>
+          <td>
+            <span data-testid="row-status">{{ row.status }}</span>
+            <div v-if="row.remaining_rows" class="progress-hint" data-testid="remaining-work">
+              剩余 {{ row.remaining_rows }} 行<span v-if="row.missing_rows">（{{ row.missing_rows }} 个位置待核对）</span>
+            </div>
+            <div v-if="row.完整性结论" class="completeness-hint" data-testid="completeness-conclusion">
+              {{ row.完整性结论 }}
+            </div>
+          </td>
           <td class="row-actions">
             <button
               v-for="action in meta.actions"
@@ -117,10 +125,15 @@ const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
-  { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
+  {
+    label: meta.metrics[1],
+    value: rows.value.filter((row) => row.status === (meta.metricStatuses?.[1] ?? meta.statuses[1])).length,
+  },
   {
     label: meta.metrics[2],
-    value: rows.value.filter((row) => row.status === meta.statuses[meta.statuses.length - 1]).length,
+    value: rows.value.filter(
+      (row) => row.status === (meta.metricStatuses?.[2] ?? meta.statuses[meta.statuses.length - 1]),
+    ).length,
   },
 ])
 const statusSummary = computed(() =>
@@ -169,9 +182,14 @@ async function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
   try {
     const result = await applyAction(meta.key, Number(row.id), action)
-    if (!result.ok) throw new Error(result.message)
+    // 中断/完整性门禁会返回 ok=false，但后端已经把行状态推进到「待恢复」并写入剩余工作；
+    // 先刷新列表，让进度和结论可见，再展示错误原因。
     await reload()
+    if (!result.ok) {
+      errorMessage.value = result.message
+    }
   } catch (error) {
+    await reload()
     errorMessage.value = error instanceof Error ? error.message : '操作失败'
   }
 }
